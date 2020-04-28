@@ -1,12 +1,12 @@
 package saros.negotiation;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import org.apache.commons.io.input.CountingInputStream;
 import org.apache.log4j.Logger;
-import org.jivesoftware.smack.XMPPException;
-import org.jivesoftware.smackx.filetransfer.IncomingFileTransfer;
 import saros.exceptions.LocalCancellationException;
 import saros.exceptions.SarosCancellationException;
 import saros.filesystem.IChecksumCache;
@@ -18,7 +18,7 @@ import saros.negotiation.stream.IncomingStreamProtocol;
 import saros.net.IReceiver;
 import saros.net.ITransmitter;
 import saros.net.xmpp.JID;
-import saros.net.xmpp.XMPPConnectionService;
+import saros.net.xmpp.filetransfer.XMPPFileTransferManager;
 import saros.observables.FileReplacementInProgressObservable;
 import saros.session.ISarosSession;
 import saros.session.ISarosSessionManager;
@@ -37,7 +37,7 @@ public class InstantIncomingProjectNegotiation extends AbstractIncomingProjectNe
       final FileReplacementInProgressObservable fileReplacementInProgressObservable, //
       final IWorkspace workspace, //
       final IChecksumCache checksumCache, //
-      final XMPPConnectionService connectionService, //
+      final XMPPFileTransferManager fileTransferManager, //
       final ITransmitter transmitter, //
       final IReceiver receiver //
       ) {
@@ -50,7 +50,7 @@ public class InstantIncomingProjectNegotiation extends AbstractIncomingProjectNe
         fileReplacementInProgressObservable,
         workspace,
         checksumCache,
-        connectionService,
+        fileTransferManager,
         transmitter,
         receiver);
   }
@@ -71,19 +71,18 @@ public class InstantIncomingProjectNegotiation extends AbstractIncomingProjectNe
       throws SarosCancellationException, IOException {
     String message = "Receiving files from " + getPeer().getName() + "...";
     monitor.beginTask(message, fileCount);
+
     monitor.subTask("Waiting for Host to start...");
-
-    awaitTransferRequest();
-
+    monitor.waitForCompletion(expectedTransfer);
     monitor.subTask("Host is starting to send...");
     log.debug(this + ": Host is starting to send...");
 
-    IncomingFileTransfer transfer = transferListener.getRequest().accept();
-    try (CountingInputStream countStream = new CountingInputStream(transfer.recieveFile());
+    try (InputStream transmissionStream = expectedTransfer.get().acceptStream();
+        CountingInputStream countStream = new CountingInputStream(transmissionStream);
         IncomingStreamProtocol isp = new IncomingStreamProtocol(countStream, session, monitor)) {
       isp.receiveStream();
       log.debug("stream bytes received: " + countStream.getByteCount());
-    } catch (XMPPException e) {
+    } catch (InterruptedException | ExecutionException e) {
       throw new LocalCancellationException(e.getMessage(), CancelOption.NOTIFY_PEER);
     }
 

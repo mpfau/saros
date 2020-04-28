@@ -5,8 +5,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.log4j.Logger;
-import org.jivesoftware.smack.XMPPException;
-import org.jivesoftware.smackx.filetransfer.OutgoingFileTransfer;
 import saros.editor.IEditorManager;
 import saros.exceptions.LocalCancellationException;
 import saros.exceptions.OperationCanceledException;
@@ -21,7 +19,8 @@ import saros.negotiation.NegotiationTools.CancelOption;
 import saros.net.IReceiver;
 import saros.net.ITransmitter;
 import saros.net.xmpp.JID;
-import saros.net.xmpp.XMPPConnectionService;
+import saros.net.xmpp.filetransfer.XMPPFileTransfer;
+import saros.net.xmpp.filetransfer.XMPPFileTransferManager;
 import saros.session.ISarosSession;
 import saros.session.ISarosSessionManager;
 import saros.session.User;
@@ -44,7 +43,7 @@ public class ArchiveOutgoingProjectNegotiation extends AbstractOutgoingProjectNe
       final IEditorManager editorManager, //
       final IWorkspace workspace, //
       final IChecksumCache checksumCache, //
-      final XMPPConnectionService connectionService, //
+      final XMPPFileTransferManager fileTransferManager, //
       final ITransmitter transmitter, //
       final IReceiver receiver, //
       final AdditionalProjectDataFactory additionalProjectDataFactory //
@@ -57,7 +56,7 @@ public class ArchiveOutgoingProjectNegotiation extends AbstractOutgoingProjectNe
         editorManager,
         workspace,
         checksumCache,
-        connectionService,
+        fileTransferManager,
         transmitter,
         receiver,
         additionalProjectDataFactory);
@@ -65,9 +64,7 @@ public class ArchiveOutgoingProjectNegotiation extends AbstractOutgoingProjectNe
 
   @Override
   protected void setup(IProgressMonitor monitor) throws IOException {
-    if (fileTransferManager == null)
-      // FIXME: the logic will try to send this to the remote contact
-      throw new IOException("not connected to a XMPP server");
+    // NOP
   }
 
   @Override
@@ -205,17 +202,9 @@ public class ArchiveOutgoingProjectNegotiation extends AbstractOutgoingProjectNe
     log.debug(this + " : sending archive");
     monitor.beginTask("Sending archive file...", 100);
 
-    assert fileTransferManager != null;
-
-    try {
-      OutgoingFileTransfer transfer =
-          fileTransferManager.createOutgoingFileTransfer(remoteContact.toString());
-
-      transfer.sendFile(archive, transferID);
-      monitorFileTransfer(transfer, monitor);
-    } catch (XMPPException e) {
-      throw new IOException(e.getMessage(), e);
-    }
+    XMPPFileTransfer transfer =
+        fileTransferManager.fileSendStart(remoteContact, archive, transferID);
+    monitorFileTransfer(transfer, monitor);
 
     monitor.done();
 
