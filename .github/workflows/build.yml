@@ -63,6 +63,11 @@ jobs:
           --parallel \
           sarosEclipse sarosIntellij sarosServer sarosLsp
 
+    - name: Static Code Analysis
+      run: |
+        ./gradlew \
+          pmdMain
+
     # Post-Build
     # Success-Case
     - name: Upload eclipse build
