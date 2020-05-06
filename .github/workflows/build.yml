@@ -66,6 +66,7 @@ jobs:
     - name: Static Code Analysis
       run: |
         ./gradlew \
+          --continue \
           pmdMain
 
     # Post-Build
