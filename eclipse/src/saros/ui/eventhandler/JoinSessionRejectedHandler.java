@@ -27,9 +27,7 @@ public final class JoinSessionRejectedHandler {
 
                 @Override
                 public void run() {
-                  handleRejection(
-                      new JID(packet.getFrom()),
-                      JoinSessionRejectedExtension.PROVIDER.getPayload(packet));
+                  handleRejection(new JID(packet.getFrom()));
                 }
               });
         }
@@ -41,7 +39,7 @@ public final class JoinSessionRejectedHandler {
         joinSessionRejectedListener, JoinSessionRejectedExtension.PROVIDER.getPacketFilter());
   }
 
-  private void handleRejection(JID from, JoinSessionRejectedExtension extension) {
+  private void handleRejection(JID from) {
 
     String name = XMPPUtils.getNickname(null, from, from.getBase());
 
