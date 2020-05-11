@@ -20,8 +20,6 @@ public interface IResource {
 
   public boolean exists();
 
-  public IPath getFullPath();
-
   public String getName();
 
   public IContainer getParent();
@@ -54,6 +52,4 @@ public interface IResource {
    * @throws IOException if the resource deletion failed
    */
   public void delete() throws IOException;
-
-  public IPath getLocation();
 }

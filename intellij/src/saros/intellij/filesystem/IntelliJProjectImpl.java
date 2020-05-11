@@ -156,12 +156,6 @@ public final class IntelliJProjectImpl extends IntelliJResourceImpl implements I
 
   @NotNull
   @Override
-  public IPath getFullPath() {
-    return IntelliJPathImpl.fromString(getName());
-  }
-
-  @NotNull
-  @Override
   public String getName() {
     return module.getName();
   }
@@ -237,16 +231,11 @@ public final class IntelliJProjectImpl extends IntelliJResourceImpl implements I
     throw new IOException("delete is not supported");
   }
 
+  // TODO unify with IntelliJFolderImpl.getFile(...) and getFolder(...)
   @NotNull
   @Override
-  public IPath getLocation() {
-    return IntelliJPathImpl.fromString(getModuleContentRoot(module).getPath());
-  }
-
-  @NotNull
-  @Override
-  public IFile getFile(final String name) {
-    return getFile(IntelliJPathImpl.fromString(name));
+  public IFile getFile(final String pathString) {
+    return getFile(IntelliJPathImpl.fromString(pathString));
   }
 
   @NotNull
@@ -279,8 +268,8 @@ public final class IntelliJProjectImpl extends IntelliJResourceImpl implements I
 
   @NotNull
   @Override
-  public IFolder getFolder(final String name) {
-    return getFolder(IntelliJPathImpl.fromString(name));
+  public IFolder getFolder(final String pathString) {
+    return getFolder(IntelliJPathImpl.fromString(pathString));
   }
 
   @NotNull

@@ -1,23 +1,11 @@
 package saros.intellij.editor.annotations;
 
-import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.editor.Editor;
-import com.intellij.openapi.editor.colors.TextAttributesKey;
-import com.intellij.openapi.editor.markup.HighlighterLayer;
-import com.intellij.openapi.editor.markup.HighlighterTargetArea;
-import com.intellij.openapi.editor.markup.RangeHighlighter;
-import com.intellij.openapi.editor.markup.TextAttributes;
-import com.intellij.openapi.util.Computable;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import saros.filesystem.IFile;
-import saros.intellij.editor.colorstorage.ColorManager;
-import saros.intellij.editor.colorstorage.ColorManager.ColorKeys;
-import saros.intellij.runtime.EDTExecutor;
 import saros.repackaged.picocontainer.Disposable;
 import saros.session.User;
 
@@ -27,26 +15,20 @@ public class AnnotationManager implements Disposable {
 
   private static final Logger log = Logger.getLogger(AnnotationManager.class);
 
-  /** Enum containing the possible annotation types. */
-  public enum AnnotationType {
-    SELECTION_ANNOTATION,
-    CONTRIBUTION_ANNOTATION
-  }
-
-  private static final int MAX_CONTRIBUTION_ANNOTATIONS =
+  public static final int MAX_CONTRIBUTION_ANNOTATIONS =
       Integer.getInteger("saros.intellij.MAX_CONTRIBUTION_ANNOTATIONS", 50);
 
   private final AnnotationStore<SelectionAnnotation> selectionAnnotationStore;
   private final AnnotationQueue<ContributionAnnotation> contributionAnnotationQueue;
 
-  @Override
-  public void dispose() {
-    removeAllAnnotations();
-  }
-
   public AnnotationManager() {
     this.selectionAnnotationStore = new AnnotationStore<>();
     this.contributionAnnotationQueue = new AnnotationQueue<>(MAX_CONTRIBUTION_ANNOTATIONS);
+  }
+
+  @Override
+  public void dispose() {
+    removeAllAnnotations();
   }
 
   /**
@@ -71,30 +53,28 @@ public class AnnotationManager implements Disposable {
 
     removeSelectionAnnotation(user, file);
 
-    checkRange(start, end);
-
     if (start == end) {
       return;
     }
 
-    AnnotationRange annotationRange;
+    SelectionAnnotation selectionAnnotation;
+    try {
+      selectionAnnotation = new SelectionAnnotation(user, file, start, end, editor);
+    } catch (IllegalStateException e) {
+      log.warn(
+          "Failed to add contribution annotation for file "
+              + file
+              + " and user "
+              + user
+              + " at position("
+              + start
+              + ","
+              + end
+              + ").",
+          e);
 
-    if (editor != null) {
-      RangeHighlighter rangeHighlighter =
-          addRangeHighlighter(user, start, end, editor, AnnotationType.SELECTION_ANNOTATION, file);
-
-      if (rangeHighlighter == null) {
-        return;
-      }
-
-      annotationRange = new AnnotationRange(start, end, rangeHighlighter);
-
-    } else {
-      annotationRange = new AnnotationRange(start, end);
+      return;
     }
-
-    SelectionAnnotation selectionAnnotation =
-        new SelectionAnnotation(user, file, editor, Collections.singletonList(annotationRange));
 
     selectionAnnotationStore.addAnnotation(selectionAnnotation);
   }
@@ -109,7 +89,9 @@ public class AnnotationManager implements Disposable {
     List<SelectionAnnotation> currentSelectionAnnotation =
         selectionAnnotationStore.removeAnnotations(user, file);
 
-    currentSelectionAnnotation.forEach(this::removeRangeHighlighter);
+    for (SelectionAnnotation annotation : currentSelectionAnnotation) {
+      annotation.removeLocalRepresentation();
+    }
   }
 
   /**
@@ -130,50 +112,32 @@ public class AnnotationManager implements Disposable {
   public void addContributionAnnotation(
       @NotNull User user, @NotNull IFile file, int start, int end, @Nullable Editor editor) {
 
-    checkRange(start, end);
-
     if (start == end) {
       return;
     }
 
-    List<AnnotationRange> annotationRanges = new ArrayList<>();
+    ContributionAnnotation contributionAnnotation;
+    try {
+      contributionAnnotation = new ContributionAnnotation(user, file, start, end, editor);
+    } catch (IllegalStateException e) {
+      log.warn(
+          "Failed to add contribution annotation for file "
+              + file
+              + " and user "
+              + user
+              + " at position("
+              + start
+              + ","
+              + end
+              + ").",
+          e);
 
-    for (int i = 0; i < end - start; i++) {
-      int currentStart = start + i;
-      int currentEnd = start + i + 1;
-
-      AnnotationRange annotationRange;
-
-      if (editor != null) {
-        RangeHighlighter rangeHighlighter =
-            addRangeHighlighter(
-                user,
-                currentStart,
-                currentEnd,
-                editor,
-                AnnotationType.CONTRIBUTION_ANNOTATION,
-                file);
-
-        if (rangeHighlighter == null) {
-          return;
-        }
-
-        annotationRange = new AnnotationRange(currentStart, currentEnd, rangeHighlighter);
-
-      } else {
-        annotationRange = new AnnotationRange(currentStart, currentEnd);
-      }
-
-      annotationRanges.add(annotationRange);
+      return;
     }
 
-    ContributionAnnotation contributionAnnotation =
-        new ContributionAnnotation(user, file, editor, annotationRanges);
-
     ContributionAnnotation dequeuedAnnotation = contributionAnnotationQueue.removeIfFull();
-
     if (dequeuedAnnotation != null) {
-      removeRangeHighlighter(dequeuedAnnotation);
+      dequeuedAnnotation.removeLocalRepresentation();
     }
 
     contributionAnnotationQueue.addAnnotation(contributionAnnotation);
@@ -194,71 +158,23 @@ public class AnnotationManager implements Disposable {
    * a currently closed file.
    *
    * @param file the file text was added to
-   * @param start the start position of added text
-   * @param end the end position of the added text
+   * @param additionStart the start position of added text
+   * @param additionEnd the end position of the added text
    */
-  public void moveAnnotationsAfterAddition(@NotNull IFile file, int start, int end) {
+  public void moveAnnotationsAfterAddition(
+      @NotNull IFile file, int additionStart, int additionEnd) {
 
-    if (start == end) {
+    if (additionStart == additionEnd) {
       return;
     }
 
-    checkRange(start, end);
+    for (SelectionAnnotation annotation : selectionAnnotationStore.getAnnotations(file)) {
+      annotation.moveAfterAddition(additionStart, additionEnd);
+    }
 
-    moveAnnotationsAfterAddition(selectionAnnotationStore.getAnnotations(file), start, end);
-    moveAnnotationsAfterAddition(contributionAnnotationQueue.getAnnotations(file), start, end);
-  }
-
-  /**
-   * If there are not range highlighters or editors present: Moves the given annotations back by the
-   * length of the addition if they are located behind the added text. Elongates the annotations by
-   * the length of the addition if they overlap with the added text.
-   *
-   * <p>Does nothing if the annotation has a local representation (an editor or range highlighters).
-   *
-   * @param annotations the annotations to move
-   * @param additionStart the star position of the added text
-   * @param additionEnd the end position of the added text
-   * @param <E> the annotation type
-   * @see #moveAnnotationsAfterAddition(IFile, int, int)
-   */
-  private <E extends AbstractEditorAnnotation> void moveAnnotationsAfterAddition(
-      @NotNull List<E> annotations, int additionStart, int additionEnd) {
-
-    int offset = additionEnd - additionStart;
-
-    annotations.forEach(
-        annotation -> {
-          if (annotation.getEditor() != null) {
-            return;
-          }
-
-          annotation
-              .getAnnotationRanges()
-              .forEach(
-                  annotationRange -> {
-                    int currentStart = annotationRange.getStart();
-                    int currentEnd = annotationRange.getEnd();
-
-                    if (annotationRange.getRangeHighlighter() != null
-                        || currentEnd <= additionStart) {
-
-                      return;
-                    }
-
-                    AnnotationRange newAnnotationRange;
-
-                    if (currentStart >= additionStart) {
-                      newAnnotationRange =
-                          new AnnotationRange(currentStart + offset, currentEnd + offset);
-
-                    } else {
-                      newAnnotationRange = new AnnotationRange(currentStart, currentEnd + offset);
-                    }
-
-                    annotation.replaceAnnotationRange(annotationRange, newAnnotationRange);
-                  });
-        });
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.getAnnotations(file)) {
+      annotation.moveAfterAddition(additionStart, additionEnd);
+    }
   }
 
   /**
@@ -276,105 +192,31 @@ public class AnnotationManager implements Disposable {
    * a currently closed file.
    *
    * @param file the file text was removed from
-   * @param start the start position of removed text
-   * @param end the end position of the removed text
+   * @param deletionStart the start position of removed text
+   * @param deletionEnd the end position of the removed text
    */
-  public void moveAnnotationsAfterDeletion(@NotNull IFile file, int start, int end) {
+  public void moveAnnotationsAfterDeletion(
+      @NotNull IFile file, int deletionStart, int deletionEnd) {
 
-    if (start == end) {
+    if (deletionStart == deletionEnd) {
       return;
     }
 
-    checkRange(start, end);
+    for (SelectionAnnotation annotation : selectionAnnotationStore.getAnnotations(file)) {
+      boolean isInvalid = annotation.moveAfterDeletion(deletionStart, deletionEnd);
 
-    List<SelectionAnnotation> emptySelectionAnnotations =
-        moveAnnotationsAfterDeletion(selectionAnnotationStore.getAnnotations(file), start, end);
+      if (isInvalid) {
+        selectionAnnotationStore.removeAnnotation(annotation);
+      }
+    }
 
-    emptySelectionAnnotations.forEach(selectionAnnotationStore::removeAnnotation);
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.getAnnotations(file)) {
+      boolean isInvalid = annotation.moveAfterDeletion(deletionStart, deletionEnd);
 
-    List<ContributionAnnotation> emptyContributionAnnotations =
-        moveAnnotationsAfterDeletion(contributionAnnotationQueue.getAnnotations(file), start, end);
-
-    emptyContributionAnnotations.forEach(contributionAnnotationQueue::removeAnnotation);
-  }
-
-  /**
-   * If there are not range highlighters or editors present: Moves all given annotations for the
-   * given file forward by the length of the removal if they are located behind the removed text.
-   * Shortens the annotations if they partially overlap with the removed text. Returns a list of
-   * annotations that were completely contained in the removed text.
-   *
-   * <p>Does nothing if the annotation has a local representation (an editor or range highlighters).
-   *
-   * @param annotations the annotations to adjust
-   * @param deletionStart the start position of the deleted text
-   * @param deletionEnd the end position of the deleted text
-   * @param <E> the annotation type
-   * @return the list of deleted annotations
-   * @see #moveAnnotationsAfterDeletion(IFile, int, int)
-   */
-  @NotNull
-  private <E extends AbstractEditorAnnotation> List<E> moveAnnotationsAfterDeletion(
-      @NotNull List<E> annotations, int deletionStart, int deletionEnd) {
-
-    int offset = deletionEnd - deletionStart;
-
-    List<E> emptyAnnotations = new ArrayList<>();
-
-    annotations.forEach(
-        annotation -> {
-          if (annotation.getEditor() != null) {
-            return;
-          }
-
-          annotation
-              .getAnnotationRanges()
-              .forEach(
-                  annotationRange -> {
-                    int currentStart = annotationRange.getStart();
-                    int currentEnd = annotationRange.getEnd();
-
-                    if (annotationRange.getRangeHighlighter() != null
-                        || currentEnd <= deletionStart) {
-
-                      return;
-                    }
-
-                    AnnotationRange newAnnotationRange;
-
-                    if (currentStart >= deletionEnd) {
-                      newAnnotationRange =
-                          new AnnotationRange(currentStart - offset, currentEnd - offset);
-
-                    } else if (currentStart < deletionStart) {
-                      if (currentEnd <= deletionEnd) {
-                        newAnnotationRange = new AnnotationRange(currentStart, deletionStart);
-
-                      } else {
-                        newAnnotationRange = new AnnotationRange(currentStart, currentEnd - offset);
-                      }
-
-                    } else {
-                      if (currentEnd <= deletionEnd) {
-                        annotation.removeAnnotationRange(annotationRange);
-
-                        return;
-
-                      } else {
-                        newAnnotationRange =
-                            new AnnotationRange(deletionStart, currentEnd - offset);
-                      }
-                    }
-
-                    annotation.replaceAnnotationRange(annotationRange, newAnnotationRange);
-                  });
-
-          if (annotation.getAnnotationRanges().isEmpty()) {
-            emptyAnnotations.add(annotation);
-          }
-        });
-
-    return emptyAnnotations;
+      if (isInvalid) {
+        contributionAnnotationQueue.removeAnnotation(annotation);
+      }
+    }
   }
 
   /**
@@ -387,62 +229,17 @@ public class AnnotationManager implements Disposable {
    *
    * @param file the file that was opened in an editor
    * @param editor the new <code>Editor</code> for the annotation
+   * @see AbstractEditorAnnotation#addLocalRepresentation(Editor)
    * @see Editor#isDisposed()
    */
   public void applyStoredAnnotations(@NotNull IFile file, @NotNull Editor editor) {
-
-    selectionAnnotationStore
-        .getAnnotations(file)
-        .forEach(annotation -> addLocalRepresentationToAnnotation(annotation, editor));
-
-    contributionAnnotationQueue
-        .getAnnotations(file)
-        .forEach(annotation -> addLocalRepresentationToAnnotation(annotation, editor));
-  }
-
-  /**
-   * Creates RangeHighlighters for the given annotation and adds the given editor and the matching
-   * created RangeHighlighters to the given annotation.
-   *
-   * @param annotation the annotation to add a local representation to
-   * @param editor the editor to create RangeHighlighters in
-   * @param <E> the annotation type
-   * @see #addRangeHighlighter(User, int, int, Editor, AnnotationType, IFile)
-   */
-  private <E extends AbstractEditorAnnotation> void addLocalRepresentationToAnnotation(
-      @NotNull E annotation, @NotNull Editor editor) {
-
-    AnnotationType annotationType;
-
-    if (annotation instanceof SelectionAnnotation) {
-      annotationType = AnnotationType.SELECTION_ANNOTATION;
-
-    } else if (annotation instanceof ContributionAnnotation) {
-      annotationType = AnnotationType.CONTRIBUTION_ANNOTATION;
-
-    } else {
-      throw new IllegalArgumentException("Unknown annotation type " + annotation.getClass());
+    for (SelectionAnnotation annotation : selectionAnnotationStore.getAnnotations(file)) {
+      annotation.addLocalRepresentation(editor);
     }
 
-    User user = annotation.getUser();
-    List<AnnotationRange> annotationRanges = annotation.getAnnotationRanges();
-
-    annotation.addEditor(editor);
-
-    IFile file = annotation.getFile();
-
-    annotationRanges.forEach(
-        annotationRange -> {
-          int start = annotationRange.getStart();
-          int end = annotationRange.getEnd();
-
-          RangeHighlighter rangeHighlighter =
-              addRangeHighlighter(user, start, end, editor, annotationType, file);
-
-          if (rangeHighlighter != null) {
-            annotationRange.addRangeHighlighter(rangeHighlighter);
-          }
-        });
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.getAnnotations(file)) {
+      annotation.addLocalRepresentation(editor);
+    }
   }
 
   /**
@@ -459,33 +256,20 @@ public class AnnotationManager implements Disposable {
    * @param file the file to update
    */
   public void updateAnnotationStore(@NotNull IFile file) {
-
     updateAnnotationStore(selectionAnnotationStore, file);
     updateAnnotationStore(contributionAnnotationQueue, file);
   }
 
-  /**
-   * Updates the given annotation stores for the given file by checking if an editor for the
-   * annotation is present and then updating the stored annotation range if it has changed. If the
-   * annotation is marked as not valid by the editor, it is removed from the annotation store.
-   *
-   * @param annotationStore the annotation store to update
-   * @param file the file to update
-   * @param <E> the type of annotations stored in the given annotation store
-   */
   private <E extends AbstractEditorAnnotation> void updateAnnotationStore(
       @NotNull AnnotationStore<E> annotationStore, @NotNull IFile file) {
 
-    List<E> annotations = annotationStore.getAnnotations(file);
+    for (E annotation : annotationStore.getAnnotations(file)) {
+      annotation.updateBoundaries();
 
-    annotations.forEach(
-        annotation -> {
-          annotation.updateBoundaries();
-
-          if (annotation.getAnnotationRanges().isEmpty()) {
-            annotationStore.removeAnnotation(annotation);
-          }
-        });
+      if (annotation.getAnnotationRanges().isEmpty()) {
+        annotationStore.removeAnnotation(annotation);
+      }
+    }
   }
 
   /**
@@ -503,14 +287,13 @@ public class AnnotationManager implements Disposable {
    * @see AbstractEditorAnnotation#removeLocalRepresentation()
    */
   public void removeLocalRepresentation(@NotNull IFile file) {
+    for (SelectionAnnotation annotation : selectionAnnotationStore.getAnnotations(file)) {
+      annotation.removeLocalRepresentation();
+    }
 
-    selectionAnnotationStore
-        .getAnnotations(file)
-        .forEach(AbstractEditorAnnotation::removeLocalRepresentation);
-
-    contributionAnnotationQueue
-        .getAnnotations(file)
-        .forEach(AbstractEditorAnnotation::removeLocalRepresentation);
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.getAnnotations(file)) {
+      annotation.removeLocalRepresentation();
+    }
   }
 
   /**
@@ -521,7 +304,6 @@ public class AnnotationManager implements Disposable {
    */
   public void reloadAnnotations() {
     reloadAnnotations(selectionAnnotationStore);
-
     reloadAnnotations(contributionAnnotationQueue);
   }
 
@@ -535,9 +317,8 @@ public class AnnotationManager implements Disposable {
    * @param annotationStore the annotation store whose annotations to reload
    * @param <E> the annotation type
    * @see AbstractEditorAnnotation#updateBoundaries()
-   * @see #removeRangeHighlighter(AbstractEditorAnnotation)
    * @see AbstractEditorAnnotation#removeLocalRepresentation()
-   * @see #addLocalRepresentationToAnnotation(AbstractEditorAnnotation, Editor)
+   * @see AbstractEditorAnnotation#addLocalRepresentation(Editor)
    */
   private <E extends AbstractEditorAnnotation> void reloadAnnotations(
       @NotNull AnnotationStore<E> annotationStore) {
@@ -551,10 +332,9 @@ public class AnnotationManager implements Disposable {
 
       annotation.updateBoundaries();
 
-      removeRangeHighlighter(annotation);
       annotation.removeLocalRepresentation();
 
-      addLocalRepresentationToAnnotation(annotation, editor);
+      annotation.addLocalRepresentation(editor);
     }
   }
 
@@ -568,10 +348,13 @@ public class AnnotationManager implements Disposable {
    * @param user the user whose annotations to remove
    */
   public void removeAnnotations(@NotNull User user) {
+    for (SelectionAnnotation annotation : selectionAnnotationStore.removeAnnotations(user)) {
+      annotation.removeLocalRepresentation();
+    }
 
-    selectionAnnotationStore.removeAnnotations(user).forEach(this::removeRangeHighlighter);
-
-    contributionAnnotationQueue.removeAnnotations(user).forEach(this::removeRangeHighlighter);
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.removeAnnotations(user)) {
+      annotation.removeLocalRepresentation();
+    }
   }
 
   /**
@@ -583,18 +366,14 @@ public class AnnotationManager implements Disposable {
    * @param file the file to remove from the annotation store
    */
   public void removeAnnotations(@NotNull IFile file) {
-
-    for (SelectionAnnotation selectionAnnotation : selectionAnnotationStore.getAnnotations(file)) {
-
-      removeRangeHighlighter(selectionAnnotation);
-      selectionAnnotationStore.removeAnnotation(selectionAnnotation);
+    for (SelectionAnnotation annotation : selectionAnnotationStore.getAnnotations(file)) {
+      annotation.removeLocalRepresentation();
+      selectionAnnotationStore.removeAnnotation(annotation);
     }
 
-    for (ContributionAnnotation contributionAnnotation :
-        contributionAnnotationQueue.getAnnotations(file)) {
-
-      removeRangeHighlighter(contributionAnnotation);
-      contributionAnnotationQueue.removeAnnotation(contributionAnnotation);
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.getAnnotations(file)) {
+      annotation.removeLocalRepresentation();
+      contributionAnnotationQueue.removeAnnotation(annotation);
     }
   }
 
@@ -603,9 +382,13 @@ public class AnnotationManager implements Disposable {
    * annotation stores.
    */
   private void removeAllAnnotations() {
-    selectionAnnotationStore.removeAllAnnotations().forEach(this::removeRangeHighlighter);
+    for (SelectionAnnotation annotation : selectionAnnotationStore.removeAllAnnotations()) {
+      annotation.removeLocalRepresentation();
+    }
 
-    contributionAnnotationQueue.removeAllAnnotations().forEach(this::removeRangeHighlighter);
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.removeAllAnnotations()) {
+      annotation.removeLocalRepresentation();
+    }
   }
 
   /**
@@ -625,180 +408,15 @@ public class AnnotationManager implements Disposable {
    * @param oldFile the old file of the annotations
    * @param newFile the new file of the annotations
    */
-  public void updateAnnotationPath(@NotNull IFile oldFile, @NotNull IFile newFile) {
-
-    updateAnnotationPath(newFile, selectionAnnotationStore.getAnnotations(oldFile));
-
+  public void updateAnnotationFile(@NotNull IFile oldFile, @NotNull IFile newFile) {
+    for (SelectionAnnotation annotation : selectionAnnotationStore.getAnnotations(oldFile)) {
+      annotation.updateFile(newFile);
+    }
     selectionAnnotationStore.updateAnnotationPath(oldFile, newFile);
 
-    updateAnnotationPath(newFile, contributionAnnotationQueue.getAnnotations(oldFile));
-
+    for (ContributionAnnotation annotation : contributionAnnotationQueue.getAnnotations(oldFile)) {
+      annotation.updateFile(newFile);
+    }
     contributionAnnotationQueue.updateAnnotationPath(oldFile, newFile);
-  }
-
-  /**
-   * Sets the given file as the new file for the given annotations to correctly store the new path
-   * of a moved file.
-   *
-   * <p><b>NOTE:</b> If the move was caused by a received Saros activity, the local representation
-   * has to be removed from the corresponding annotations. This method assumes that such local
-   * representations were already removed if necessary.
-   *
-   * @param newFile the new file of the annotations
-   * @param oldAnnotations the annotations for the old file
-   * @param <E> the type of annotations stored in the given annotation store
-   */
-  private <E extends AbstractEditorAnnotation> void updateAnnotationPath(
-      @NotNull IFile newFile, @NotNull List<E> oldAnnotations) {
-
-    for (E oldAnnotation : oldAnnotations) {
-      oldAnnotation.updateFile(newFile);
-    }
-  }
-
-  /**
-   * Checks whether the given start and end point form a valid range.
-   *
-   * <p>The following conditions must hold true:
-   *
-   * <ul>
-   *   <li>start >= 0
-   *   <li>end >= 0
-   *   <li>start <= end
-   * </ul>
-   *
-   * Throws an <code>IllegalArgumentException</code> otherwise.
-   *
-   * @param start the start position
-   * @param end the end position
-   */
-  private void checkRange(int start, int end) {
-    if (start < 0 || end < 0) {
-      throw new IllegalArgumentException(
-          "The start and end of the annotation must not be negative "
-              + "values. start: "
-              + start
-              + ", end: "
-              + end);
-    }
-
-    if (start > end) {
-      throw new IllegalArgumentException(
-          "The start of the annotation must not be after the end of the "
-              + "annotation. start: "
-              + start
-              + ", end: "
-              + end);
-    }
-  }
-
-  /**
-   * Creates a RangeHighlighter with the given position for the given editor.
-   *
-   * <p>The color of the highlighter is determined by the given user and annotation type. Valid
-   * types are defined in the enum <code>AnnotationType</code>. The returned <code>RangeHighlighter
-   * </code> can not be modified through the API but is automatically updated by Intellij if there
-   * are changes to the editor.
-   *
-   * @param user the user whose color to use
-   * @param start the start of the highlighted area
-   * @param end the end of the highlighted area
-   * @param editor the editor to create the highlighter for
-   * @param annotationType the type of annotation
-   * @param file the file the annotation belongs to
-   * @return a RangeHighlighter with the given parameters or <code>null</code> if the given end
-   *     position is located after the document end
-   */
-  @Nullable
-  private RangeHighlighter addRangeHighlighter(
-      @NotNull User user,
-      int start,
-      int end,
-      @NotNull Editor editor,
-      @NotNull AnnotationType annotationType,
-      @NotNull IFile file) {
-
-    int documentLength = editor.getDocument().getTextLength();
-
-    if (documentLength < end) {
-      log.warn(
-          "The creation of a range highlighter with the bounds ("
-              + start
-              + ", "
-              + end
-              + ") for the file "
-              + file.getProject().getName()
-              + " - "
-              + file.getProjectRelativePath()
-              + " failed as the given end position is located after the "
-              + "document end. document length: "
-              + documentLength
-              + ", end position: "
-              + end);
-
-      return null;
-    }
-
-    // Retrieve color keys based on the color ID selected by this user. This will automatically
-    // fall back to default colors, if no colors for the given ID are available.
-    final ColorKeys colorKeys = ColorManager.getColorKeys(user.getColorID());
-    final TextAttributesKey highlightColorKey;
-    switch (annotationType) {
-      case SELECTION_ANNOTATION:
-        highlightColorKey = colorKeys.getSelectionColorKey();
-        break;
-      case CONTRIBUTION_ANNOTATION:
-        highlightColorKey = colorKeys.getContributionColorKey();
-        break;
-      default:
-        throw new IllegalStateException("Unknown AnnotationType: " + annotationType);
-    }
-
-    // Resolve the correct text attributes based on the currently configured IDE scheme.
-    final TextAttributes textAttr = editor.getColorsScheme().getAttributes(highlightColorKey);
-
-    return EDTExecutor.invokeAndWait(
-        (Computable<RangeHighlighter>)
-            () ->
-                editor
-                    .getMarkupModel()
-                    .addRangeHighlighter(
-                        start,
-                        end,
-                        HighlighterLayer.LAST,
-                        textAttr,
-                        HighlighterTargetArea.EXACT_RANGE),
-        ModalityState.defaultModalityState());
-  }
-
-  /**
-   * Removes all existing RangeHighlighters for the given annotation from the editor of the
-   * annotation. This does <b>not</b> affect the stored values in the given annotation, meaning the
-   * objects for the RangeHighlighters will still remain stored in the annotation.
-   *
-   * @param annotation the annotation whose highlighters to remove
-   */
-  private void removeRangeHighlighter(@NotNull AbstractEditorAnnotation annotation) {
-
-    Editor editor = annotation.getEditor();
-
-    if (editor == null) {
-      return;
-    }
-
-    List<AnnotationRange> annotationRanges = annotation.getAnnotationRanges();
-
-    annotationRanges.forEach(
-        annotationRange -> {
-          RangeHighlighter rangeHighlighter = annotationRange.getRangeHighlighter();
-
-          if (rangeHighlighter == null || !rangeHighlighter.isValid()) {
-            return;
-          }
-
-          EDTExecutor.invokeAndWait(
-              () -> editor.getMarkupModel().removeHighlighter(rangeHighlighter),
-              ModalityState.defaultModalityState());
-        });
   }
 }

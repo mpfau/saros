@@ -1,5 +1,4 @@
 /*
- *
  *  DPP - Serious Distributed Pair Programming
  *  (c) Freie Universität Berlin - Fachbereich Mathematik und Informatik - 2010
  *
@@ -19,13 +18,23 @@
  * /
  */
 
-package saros.filesystem;
+package saros.filesystem.checksum;
+
+import saros.filesystem.IFile;
 
 /**
- * This interface is under development. It currently equals its Eclipse counterpart. If not
- * mentioned otherwise all offered methods are equivalent to their Eclipse counterpart.
+ * A checksum cache that always makes callers recalculate checksums.
+ *
+ * <p>Useful if your implementation has difficulties using the {@link FileSystemChecksumCache}.
  */
-public interface IWorkspaceRoot extends IContainer {
+public class NullChecksumCache implements IChecksumCache {
+  @Override
+  public Long getChecksum(IFile file) {
+    return null;
+  }
 
-  public IProject[] getProjects();
+  @Override
+  public boolean addChecksum(IFile file, long checksum) {
+    return false;
+  }
 }

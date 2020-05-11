@@ -150,7 +150,7 @@ public class SharedResourcesManager implements Startable {
 
     IFile file = activity.getResource();
 
-    log.debug("performing recovery for file: " + file.getFullPath());
+    log.debug("performing recovery for file: " + file);
 
     FileActivity.Type type = activity.getType();
 
@@ -220,7 +220,7 @@ public class SharedResourcesManager implements Startable {
 
     cleanUpBackgroundEditorPool(oldFile);
 
-    annotationManager.updateAnnotationPath(oldFile, newFile);
+    annotationManager.updateAnnotationFile(oldFile, newFile);
 
     try {
       setFilesystemModificationHandlerEnabled(false);

@@ -4,16 +4,18 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.log4j.Logger;
 import saros.editor.IEditorManager;
 import saros.exceptions.LocalCancellationException;
 import saros.exceptions.OperationCanceledException;
 import saros.exceptions.SarosCancellationException;
-import saros.filesystem.IChecksumCache;
 import saros.filesystem.IFile;
 import saros.filesystem.IProject;
 import saros.filesystem.IResource;
 import saros.filesystem.IWorkspace;
+import saros.filesystem.checksum.IChecksumCache;
 import saros.monitoring.IProgressMonitor;
 import saros.negotiation.NegotiationTools.CancelOption;
 import saros.net.IReceiver;
@@ -136,8 +138,7 @@ public class ArchiveOutgoingProjectNegotiation extends AbstractOutgoingProjectNe
 
     checkCancellation(CancelOption.NOTIFY_PEER);
 
-    final List<IFile> filesToCompress = new ArrayList<IFile>(fileCount);
-    final List<String> fileAlias = new ArrayList<String>(fileCount);
+    final List<Pair<IFile, String>> filesToCompress = new ArrayList<>(fileCount);
 
     final List<IResource> projectsToLock = new ArrayList<IResource>();
 
@@ -166,11 +167,14 @@ public class ArchiveOutgoingProjectNegotiation extends AbstractOutgoingProjectNe
       final int prefixLength = aliasBuilder.length();
 
       for (final String path : list.getPaths()) {
-
         // assert path is relative !
-        filesToCompress.add(project.getFile(path));
         aliasBuilder.append(path);
-        fileAlias.add(aliasBuilder.toString());
+
+        IFile file = project.getFile(path);
+        String qualifiedPath = aliasBuilder.toString();
+
+        filesToCompress.add(new ImmutablePair<>(file, qualifiedPath));
+
         aliasBuilder.setLength(prefixLength);
       }
     }
@@ -182,7 +186,7 @@ public class ArchiveOutgoingProjectNegotiation extends AbstractOutgoingProjectNe
     try {
       tempArchive = File.createTempFile("saros_" + getID(), ".zip");
       workspace.run(
-          new CreateArchiveTask(tempArchive, filesToCompress, fileAlias, monitor),
+          new CreateArchiveTask(tempArchive, filesToCompress, monitor),
           projectsToLock.toArray(new IResource[0]));
     } catch (OperationCanceledException e) {
       LocalCancellationException canceled = new LocalCancellationException();

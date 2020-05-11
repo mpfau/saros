@@ -25,11 +25,6 @@ public class EclipseResourceImpl implements IResource {
   }
 
   @Override
-  public IPath getFullPath() {
-    return new EclipsePathImpl(delegate.getFullPath());
-  }
-
-  @Override
   public String getName() {
     return delegate.getName();
   }
@@ -46,7 +41,7 @@ public class EclipseResourceImpl implements IResource {
       case org.eclipse.core.resources.IResource.PROJECT:
         return new EclipseProjectImpl((org.eclipse.core.resources.IProject) container);
       case org.eclipse.core.resources.IResource.ROOT:
-        return new EclipseWorkspaceRootImpl((org.eclipse.core.resources.IWorkspaceRoot) container);
+        return new EclipseContainerImpl(container);
       default:
         return null;
     }
@@ -123,12 +118,6 @@ public class EclipseResourceImpl implements IResource {
     } catch (CoreException | OperationCanceledException e) {
       throw new IOException(e);
     }
-  }
-
-  @Override
-  public IPath getLocation() {
-    org.eclipse.core.runtime.IPath location = delegate.getLocation();
-    return (location != null) ? new EclipsePathImpl(location) : null;
   }
 
   /**

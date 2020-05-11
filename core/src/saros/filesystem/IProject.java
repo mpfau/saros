@@ -25,12 +25,4 @@ package saros.filesystem;
  * This interface is under development. It currently equals its Eclipse counterpart. If not
  * mentioned otherwise all offered methods are equivalent to their Eclipse counterpart.
  */
-public interface IProject extends IContainer {
-  public IFile getFile(String name);
-
-  public IFile getFile(IPath path);
-
-  public IFolder getFolder(String name);
-
-  public IFolder getFolder(IPath path);
-}
+public interface IProject extends IContainer {}

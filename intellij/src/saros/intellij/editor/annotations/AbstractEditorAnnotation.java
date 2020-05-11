@@ -1,12 +1,21 @@
 package saros.intellij.editor.annotations;
 
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.editor.markup.HighlighterLayer;
+import com.intellij.openapi.editor.markup.HighlighterTargetArea;
+import com.intellij.openapi.editor.markup.RangeHighlighter;
+import com.intellij.openapi.editor.markup.TextAttributes;
+import com.intellij.openapi.util.Computable;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
+import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import saros.filesystem.IFile;
+import saros.intellij.runtime.EDTExecutor;
 import saros.session.User;
 
 /**
@@ -23,6 +32,8 @@ import saros.session.User;
  * @see AnnotationRange
  */
 abstract class AbstractEditorAnnotation {
+  private static final Logger log = Logger.getLogger(AbstractEditorAnnotation.class);
+
   private final User user;
   private IFile file;
   private final List<AnnotationRange> annotationRanges;
@@ -88,6 +99,40 @@ abstract class AbstractEditorAnnotation {
   }
 
   /**
+   * Checks whether the given start and end offset form a valid range.
+   *
+   * <p>The following conditions must hold true:
+   *
+   * <ul>
+   *   <li><code>start &ge; 0</code>
+   *   <li><code>end &ge; 0</code>
+   *   <li><code>start &le; end</code>
+   * </ul>
+   *
+   * @param start the start position
+   * @param end the end position
+   * @throws IllegalStateException if <code>start &lt; 0</code>, <code>end &lt; 0</code>, or <code>
+   *     start &gt; end</code>
+   */
+  static void checkRange(int start, int end) {
+    if (start < 0 || end < 0) {
+      throw new IllegalArgumentException(
+          "The start and end of the given range must not be a negative value. start: "
+              + start
+              + ", end: "
+              + end);
+    }
+
+    if (start > end) {
+      throw new IllegalArgumentException(
+          "The start of the given range must not be after the end of the range. start: "
+              + start
+              + ", end: "
+              + end);
+    }
+  }
+
+  /**
    * Adds the given <code>Editor</code> to the annotation.
    *
    * <p>This method should be used when adding the local representation of the annotation when an
@@ -105,17 +150,40 @@ abstract class AbstractEditorAnnotation {
   }
 
   /**
-   * Removes the <code>Editor</code> and <code>RangeHighlighter</code> from the annotation.
+   * Adds the given editor to this annotations. Creates and adds the RangeHighlighters for all
+   * contained annotation ranges.
    *
-   * <p><b>NOTE:</b> This does not remove the annotation from the editor. This has to be done
-   * explicitly through the {@link AnnotationManager}.
+   * @param editor the editor to create RangeHighlighters in
+   */
+  abstract void addLocalRepresentation(@NotNull Editor editor);
+
+  /**
+   * Removes all held range highlighters from the held editor and drops the held <code>Editor</code>
+   * and all held <code>RangeHighlighter</code> references.
+   *
+   * <p>Does nothing if no editor is present.
    *
    * <p>This method should be used to remove the local representation of the annotation when the
    * editor for the corresponding file is closed.
    */
   void removeLocalRepresentation() {
+    if (editor == null) {
+      return;
+    }
+
+    for (AnnotationRange annotationRange : annotationRanges) {
+      RangeHighlighter rangeHighlighter = annotationRange.getRangeHighlighter();
+
+      annotationRange.removeRangeHighlighter();
+
+      if (rangeHighlighter == null || !rangeHighlighter.isValid()) {
+        continue;
+      }
+
+      removeRangeHighlighter(editor, rangeHighlighter);
+    }
+
     editor = null;
-    annotationRanges.forEach(AnnotationRange::removeRangeHighlighter);
   }
 
   /**
@@ -145,8 +213,7 @@ abstract class AbstractEditorAnnotation {
   /**
    * Returns an <b>unmodifiable copy</b> of the held list of annotation ranges. The returned list
    * can not be used to modify the internally held list. To modify the internal list of annotation
-   * ranges, please use {@link #replaceAnnotationRange(AnnotationRange, AnnotationRange)} and {@link
-   * #removeAnnotationRange(AnnotationRange)}.
+   * ranges, please use {@link #replaceAnnotationRange(AnnotationRange, AnnotationRange)}.
    *
    * @return an unmodifiable copy of the held list of annotation ranges.
    */
@@ -181,17 +248,6 @@ abstract class AbstractEditorAnnotation {
   }
 
   /**
-   * Removes the given <code>AnnotationRange</code> from the held list of annotation ranges if
-   * present.
-   *
-   * @param annotationRange the annotation range to remove
-   */
-  void removeAnnotationRange(@NotNull AnnotationRange annotationRange) {
-
-    annotationRanges.remove(annotationRange);
-  }
-
-  /**
    * Changes the file the annotation belongs to.
    *
    * @param newFile the new file of the annotation
@@ -214,6 +270,187 @@ abstract class AbstractEditorAnnotation {
   @Nullable
   Editor getEditor() {
     return editor;
+  }
+
+  /**
+   * Updates the position of the annotation according to the given addition boundaries.
+   *
+   * <p>If there are no range highlighters or editors present: Moves the given annotations back by
+   * the length of the addition if they are located behind the added text. Elongates the annotations
+   * by the length of the addition if they overlap with the added text.
+   *
+   * <p>Does nothing if the annotation has a local representation (an editor or range highlighters)
+   * as this will be done automatically by the internal Intellij logic.
+   *
+   * @param additionStart the star position of the added text
+   * @param additionEnd the end position of the added text
+   * @see AnnotationManager#moveAnnotationsAfterAddition(IFile, int, int)
+   */
+  void moveAfterAddition(int additionStart, int additionEnd) {
+    if (editor != null) {
+      return;
+    }
+
+    checkRange(additionStart, additionEnd);
+
+    int offset = additionEnd - additionStart;
+
+    for (AnnotationRange annotationRange : annotationRanges) {
+      int currentStart = annotationRange.getStart();
+      int currentEnd = annotationRange.getEnd();
+
+      if (annotationRange.getRangeHighlighter() != null || currentEnd <= additionStart) {
+
+        continue;
+      }
+
+      AnnotationRange newAnnotationRange;
+
+      if (currentStart >= additionStart) {
+        newAnnotationRange = new AnnotationRange(currentStart + offset, currentEnd + offset);
+
+      } else {
+        newAnnotationRange = new AnnotationRange(currentStart, currentEnd + offset);
+      }
+
+      replaceAnnotationRange(annotationRange, newAnnotationRange);
+    }
+  }
+
+  /**
+   * Updates the position of the annotation according to the given deletion boundaries. Returns
+   * whether the annotation is invalid after the deletion and should therefor be removed from the
+   * annotation store.
+   *
+   * <p>If there are no range highlighters or editors present: Moves all given annotations for the
+   * given file forward by the length of the removal if they are located behind the removed text.
+   * Shortens the annotations if they partially overlap with the removed text.
+   *
+   * <p>Does nothing if the annotation has a local representation (an editor or range highlighters)
+   * as this will be done automatically by the internal Intellij logic.
+   *
+   * @param deletionStart the start position of the deleted text
+   * @param deletionEnd the end position of the deleted text
+   * @return whether the annotation is invalid after the deletion
+   * @see AnnotationManager#moveAnnotationsAfterDeletion(IFile, int, int)
+   */
+  boolean moveAfterDeletion(int deletionStart, int deletionEnd) {
+    if (editor != null) {
+      return false;
+    }
+
+    checkRange(deletionStart, deletionEnd);
+
+    int offset = deletionEnd - deletionStart;
+
+    for (Iterator<AnnotationRange> iterator = annotationRanges.iterator(); iterator.hasNext(); ) {
+      AnnotationRange annotationRange = iterator.next();
+
+      int currentStart = annotationRange.getStart();
+      int currentEnd = annotationRange.getEnd();
+
+      if (annotationRange.getRangeHighlighter() != null || currentEnd <= deletionStart) {
+
+        continue;
+      }
+
+      AnnotationRange newAnnotationRange;
+
+      if (currentStart >= deletionEnd) {
+        newAnnotationRange = new AnnotationRange(currentStart - offset, currentEnd - offset);
+
+      } else if (currentStart < deletionStart) {
+        if (currentEnd <= deletionEnd) {
+          newAnnotationRange = new AnnotationRange(currentStart, deletionStart);
+
+        } else {
+          newAnnotationRange = new AnnotationRange(currentStart, currentEnd - offset);
+        }
+
+      } else {
+        if (currentEnd <= deletionEnd) {
+          iterator.remove();
+
+          continue;
+
+        } else {
+          newAnnotationRange = new AnnotationRange(deletionStart, currentEnd - offset);
+        }
+      }
+
+      replaceAnnotationRange(annotationRange, newAnnotationRange);
+    }
+
+    return annotationRanges.isEmpty();
+  }
+
+  /**
+   * Creates a RangeHighlighter with the given position and text attributes for the given editor.
+   *
+   * <p>The returned <code>RangeHighlighter</code> can not be modified through the API but is
+   * automatically updated by Intellij if there are changes to the editor.
+   *
+   * @param start the start of the highlighted area
+   * @param end the end of the highlighted area
+   * @param editor the editor to create the highlighter for
+   * @param file the file for the editor
+   * @return a RangeHighlighter with the given parameters or <code>null</code> if the given end
+   *     position is located after the document end
+   */
+  @Nullable
+  static RangeHighlighter addRangeHighlighter(
+      int start,
+      int end,
+      @NotNull Editor editor,
+      @NotNull TextAttributes textAttributes,
+      @NotNull IFile file) {
+
+    int documentLength = editor.getDocument().getTextLength();
+
+    if (documentLength < end) {
+      log.warn(
+          "The creation of a range highlighter with the bounds ("
+              + start
+              + ", "
+              + end
+              + ") for the file "
+              + file.getProject().getName()
+              + " - "
+              + file.getProjectRelativePath()
+              + " failed as the given end position is located after the "
+              + "document end. document length: "
+              + documentLength
+              + ", end position: "
+              + end);
+
+      return null;
+    }
+
+    return EDTExecutor.invokeAndWait(
+        (Computable<RangeHighlighter>)
+            () ->
+                editor
+                    .getMarkupModel()
+                    .addRangeHighlighter(
+                        start,
+                        end,
+                        HighlighterLayer.LAST,
+                        textAttributes,
+                        HighlighterTargetArea.EXACT_RANGE),
+        ModalityState.defaultModalityState());
+  }
+
+  /**
+   * Removes the given range highlighter from the given editor.
+   *
+   * @param editor the editor from which to remove the range highlighter
+   * @param rangeHighlighter the range highlighter to remove
+   */
+  static void removeRangeHighlighter(
+      @NotNull Editor editor, @NotNull RangeHighlighter rangeHighlighter) {
+    EDTExecutor.invokeAndWait(
+        () -> editor.getMarkupModel().removeHighlighter(rangeHighlighter),
+        ModalityState.defaultModalityState());
   }
 
   @Override

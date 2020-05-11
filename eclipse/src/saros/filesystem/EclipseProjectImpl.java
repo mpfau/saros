@@ -6,26 +6,6 @@ public class EclipseProjectImpl extends EclipseContainerImpl implements IProject
     super(delegate);
   }
 
-  @Override
-  public IFile getFile(String name) {
-    return new EclipseFileImpl(getDelegate().getFile(name));
-  }
-
-  @Override
-  public IFile getFile(IPath path) {
-    return new EclipseFileImpl(getDelegate().getFile(((EclipsePathImpl) path).getDelegate()));
-  }
-
-  @Override
-  public IFolder getFolder(String name) {
-    return new EclipseFolderImpl(getDelegate().getFolder(name));
-  }
-
-  @Override
-  public IFolder getFolder(IPath path) {
-    return new EclipseFolderImpl(getDelegate().getFolder(((EclipsePathImpl) path).getDelegate()));
-  }
-
   /**
    * Returns the original {@link org.eclipse.core.resources.IProject IProject} object.
    *
