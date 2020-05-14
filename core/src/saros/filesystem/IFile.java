@@ -73,4 +73,8 @@ public interface IFile extends IResource {
    * @throws IOException if the file does not exist or its contents could not be read
    */
   long getSize() throws IOException;
+
+  default Type getType() {
+    return Type.FILE;
+  }
 }
